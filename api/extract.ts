@@ -226,14 +226,33 @@ async function runMiddleware(req: IncomingMessage, res: ServerResponse) {
 }
 
 async function extractPdfText(file: UploadedFile) {
-  const { PDFParse } = await import('pdf-parse');
-  const parser = new PDFParse({ data: file.buffer });
-  try {
-    const result = await parser.getText();
-    return result.text || '';
-  } finally {
-    await parser.destroy();
-  }
+  const { default: PDFParser } = await import('pdf2json');
+
+  return await new Promise<string>((resolve, reject) => {
+    const parser = new PDFParser(null, true);
+
+    parser.once('pdfParser_dataError', (error) => {
+      parser.destroy();
+      reject(error instanceof Error ? error : error.parserError);
+    });
+
+    parser.once('pdfParser_dataReady', (data) => {
+      try {
+        const text = data.Pages.flatMap((page) =>
+          page.Texts.sort((a, b) => a.y - b.y || a.x - b.x).map((item) =>
+            item.R.map((run) => decodeURIComponent(run.T)).join(''),
+          ),
+        ).join('\n');
+        parser.destroy();
+        resolve(text);
+      } catch (error) {
+        parser.destroy();
+        reject(error);
+      }
+    });
+
+    parser.parseBuffer(file.buffer, 0);
+  });
 }
 
 export default async function handler(req: IncomingMessage & { file?: UploadedFile }, res: ApiResponse) {
