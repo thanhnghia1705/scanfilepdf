@@ -32,6 +32,7 @@ type ApiResponse = ServerResponse & {
 
 type UploadedFile = {
   mimetype: string;
+  originalname: string;
   buffer: Buffer;
 };
 
@@ -95,6 +96,17 @@ function firstMatch(text: string, patterns: RegExp[]) {
     if (match?.[1]) return cleanText(match[1]);
   }
   return '';
+}
+
+function extractReceiptNumberFromFileName(fileName: string): string {
+  const baseName = fileName.replace(/\.[^.]+$/, '').trim();
+  const vnacMatch = baseName.match(/\b(VNAC[A-Z0-9_-]{6,})\b/i);
+  if (vnacMatch?.[1]) return vnacMatch[1].toUpperCase();
+
+  const invoiceMatch = baseName.match(/\b((?:INV|RECEIPT|BILL)[A-Z0-9_-]{5,})\b/i);
+  if (invoiceMatch?.[1]) return invoiceMatch[1].toUpperCase();
+
+  return /^[A-Z0-9_-]{8,}$/i.test(baseName) ? baseName.toUpperCase() : '';
 }
 
 function matchDateValue(text: string): string {
@@ -177,8 +189,8 @@ function extractFromPlainText(text: string): ExtractedReceipt {
   };
 }
 
-function buildResponse(extractedData: ExtractedReceipt) {
-  const receiptNumber = cleanText(extractedData.receiptNumber);
+function buildResponse(extractedData: ExtractedReceipt, fileName: string, extraNote = '') {
+  const receiptNumber = cleanText(extractedData.receiptNumber) || extractReceiptNumberFromFileName(fileName);
   const receiptDate = cleanText(extractedData.receiptDate);
   const creatorName = cleanText(extractedData.creatorName);
   const totalAmountRaw = cleanText(extractedData.totalAmount);
@@ -200,7 +212,7 @@ function buildResponse(extractedData: ExtractedReceipt) {
     totalAmountRaw,
     totalAmount: parseVndAmount(totalAmountRaw),
     status: missingFields.length === 0 ? 'Đọc thành công' : 'Thiếu thông tin',
-    note: ['Đọc từ text PDF trên Vercel', ...missingFields].filter(Boolean).join(', '),
+    note: [extraNote || 'Đọc từ text PDF trên Vercel', ...missingFields].filter(Boolean).join(', '),
     readMethod: 'Vercel PDF text fallback',
   };
 }
@@ -239,26 +251,28 @@ export default async function handler(req: IncomingMessage & { file?: UploadedFi
 
     const text = await extractPdfText(req.file);
     if (!text.trim()) {
-      res.status(200).json({
-        receiptNumber: '',
-        receiptDate: '',
-        receiptDateConverted: '',
-        creatorName: '',
-        creatorUsername: '',
-        billingAddress: '',
-        totalAmountRaw: '',
-        totalAmount: '',
-        status: 'Lỗi',
-        note: 'PDF này có thể là file scan ảnh nên không có text để đọc trên Vercel',
-        readMethod: 'Vercel PDF text fallback',
-      });
+      res
+        .status(200)
+        .json(
+          buildResponse(
+            {},
+            req.file.originalname,
+            'PDF không có text để đọc trên Vercel; đã lấy số hóa đơn từ tên file nếu nhận diện được',
+          ),
+        );
       return;
     }
 
-    res.status(200).json(buildResponse(extractFromPlainText(text)));
+    res.status(200).json(buildResponse(extractFromPlainText(text), req.file.originalname));
   } catch (error) {
-    res.status(500).json({
-      error: error instanceof Error ? error.message : 'Không đọc được file PDF.',
-    });
+    const fallback = buildResponse(
+      {},
+      req.file?.originalname || '',
+      error instanceof Error
+        ? `Không đọc được text PDF trên Vercel: ${error.message}; đã lấy số hóa đơn từ tên file nếu nhận diện được`
+        : 'Không đọc được text PDF trên Vercel; đã lấy số hóa đơn từ tên file nếu nhận diện được',
+    );
+
+    res.status(200).json(fallback);
   }
 }

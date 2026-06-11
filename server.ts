@@ -176,6 +176,17 @@ function firstMatch(text: string, patterns: RegExp[]) {
   return '';
 }
 
+function extractReceiptNumberFromFileName(fileName: string): string {
+  const baseName = fileName.replace(/\.[^.]+$/, '').trim();
+  const vnacMatch = baseName.match(/\b(VNAC[A-Z0-9_-]{6,})\b/i);
+  if (vnacMatch?.[1]) return vnacMatch[1].toUpperCase();
+
+  const invoiceMatch = baseName.match(/\b((?:INV|RECEIPT|BILL)[A-Z0-9_-]{5,})\b/i);
+  if (invoiceMatch?.[1]) return invoiceMatch[1].toUpperCase();
+
+  return /^[A-Z0-9_-]{8,}$/i.test(baseName) ? baseName.toUpperCase() : '';
+}
+
 function parseJsonResponse(text: string): ExtractedReceipt {
   const trimmed = text.trim();
   if (!trimmed) return {};
@@ -230,8 +241,8 @@ function extractFromPlainText(text: string): ExtractedReceipt {
   };
 }
 
-function buildResponse(extractedData: ExtractedReceipt, readMethod: string, extraNote = '') {
-  const receiptNumber = cleanText(extractedData.receiptNumber);
+function buildResponse(extractedData: ExtractedReceipt, readMethod: string, extraNote = '', fileName = '') {
+  const receiptNumber = cleanText(extractedData.receiptNumber) || extractReceiptNumberFromFileName(fileName);
   const receiptDate = cleanText(extractedData.receiptDate);
   const creatorName = cleanText(extractedData.creatorName);
   const creatorUsername = cleanText(extractedData.creatorUsername);
@@ -353,7 +364,7 @@ async function startServer() {
         try {
           const extractedData = await extractWithGemini(ai, file);
           const readMethod = file.mimetype === 'application/pdf' ? 'Gemini PDF OCR' : 'Gemini Image OCR';
-          res.json(buildResponse(extractedData, readMethod));
+          res.json(buildResponse(extractedData, readMethod, '', file.originalname));
           return;
         } catch (error) {
           console.error(`Gemini extract error for ${file.originalname}:`, error);
@@ -374,17 +385,24 @@ async function startServer() {
           const text = await extractPdfText(file);
           if (!text.trim()) {
             res.json({
-              ...buildResponse({}, 'PDF text fallback', ai ? 'Gemini lỗi; PDF không có text để đọc dự phòng' : ''),
+              ...buildResponse(
+                {},
+                'PDF text fallback',
+                ai
+                  ? 'Gemini lỗi; PDF không có text để đọc dự phòng; đã lấy số hóa đơn từ tên file nếu nhận diện được'
+                  : 'PDF không có text để đọc; đã lấy số hóa đơn từ tên file nếu nhận diện được',
+                file.originalname,
+              ),
               status: ERROR_STATUS,
               note: ai
-                ? 'Gemini lỗi; PDF này có thể là file scan ảnh nên không có text để đọc dự phòng'
-                : 'Chưa cấu hình GEMINI_API_KEY và PDF này có thể là file scan ảnh nên không có text để đọc',
+                ? 'Gemini lỗi; PDF này có thể là file scan ảnh nên không có text để đọc dự phòng; đã lấy số hóa đơn từ tên file nếu nhận diện được'
+                : 'PDF này có thể là file scan ảnh nên không có text để đọc; đã lấy số hóa đơn từ tên file nếu nhận diện được',
             });
             return;
           }
 
-          const extraNote = ai ? 'Gemini lỗi; đã đọc dự phòng từ text trong PDF' : 'Đọc từ text PDF; file scan ảnh cần Gemini API key';
-          res.json(buildResponse(extractFromPlainText(text), 'PDF text fallback', extraNote));
+          const extraNote = ai ? 'Gemini lỗi; đã đọc dự phòng từ text trong PDF' : 'Đọc từ text PDF';
+          res.json(buildResponse(extractFromPlainText(text), 'PDF text fallback', extraNote, file.originalname));
           return;
         } catch (error) {
           console.error(`PDF fallback error for ${file.originalname}:`, error);
