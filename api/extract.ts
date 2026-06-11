@@ -79,7 +79,13 @@ const receiptDateLabelRegex =
   /(?:receipt\s*date|date\s*of\s*receipt|invoice\s*date|issue\s*date|issued\s*(?:date|on)?|created\s*(?:date|time)?|payment\s*date|transaction\s*date|ngày\s*(?:hóa đơn|lập|giao dịch|thanh toán)?)/i;
 
 function cleanText(value: unknown): string {
-  return typeof value === 'string' ? value.replace(/\s+/g, ' ').trim() : '';
+  if (typeof value !== 'string') return '';
+  return value
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/\s*([./-])\s*/g, '$1')
+    .replace(/(?<=\d)\s+(?=\d)/g, '')
+    .replace(/\b([A-Z])\s+([a-z]{2,})\b/g, '$1$2');
 }
 
 function safeDecodePdfText(value: string): string {
@@ -209,7 +215,7 @@ function extractFromPlainText(text: string): ExtractedReceipt {
       ]) || '',
     receiptDate: extractReceiptDate(compactText),
     creatorName: firstMatch(compactText, [
-      /(?:bill to|creator name|creator|customer|name|recipient)\s*[:\-]\s*([^\n]{2,80})/i,
+      /(?:bill\s*t\s*o|creator name|creator|customer|name|recipient)\s*[:\-]\s*([^\n]{2,80})/i,
     ]),
     creatorUsername: firstMatch(compactText, [
       /(?:username|handle|creator username)\s*[:\-]?\s*(@?[A-Za-z0-9._-]{2,})/i,

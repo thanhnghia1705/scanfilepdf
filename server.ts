@@ -42,7 +42,13 @@ type ExtractedReceipt = {
 };
 
 function cleanText(value: unknown): string {
-  return typeof value === 'string' ? value.replace(/\s+/g, ' ').trim() : '';
+  if (typeof value !== 'string') return '';
+  return value
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/\s*([./-])\s*/g, '$1')
+    .replace(/(?<=\d)\s+(?=\d)/g, '')
+    .replace(/\b([A-Z])\s+([a-z]{2,})\b/g, '$1$2');
 }
 
 function parseVndAmount(amountText: string): number | '' {
@@ -214,7 +220,7 @@ function extractFromPlainText(text: string): ExtractedReceipt {
   const receiptDate = extractReceiptDate(compactText);
 
   const creatorName = firstMatch(compactText, [
-    /(?:bill to|creator name|creator|customer|name|recipient)\s*[:\-]\s*([^\n]{2,80})/i,
+    /(?:bill\s*t\s*o|creator name|creator|customer|name|recipient)\s*[:\-]\s*([^\n]{2,80})/i,
   ]);
 
   const creatorUsername = firstMatch(compactText, [
