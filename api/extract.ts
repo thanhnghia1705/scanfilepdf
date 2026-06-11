@@ -90,6 +90,33 @@ function safeDecodePdfText(value: string): string {
   }
 }
 
+function installPdfJsPolyfills() {
+  const globalScope = globalThis as Record<string, unknown>;
+
+  if (!globalScope.DOMMatrix) {
+    globalScope.DOMMatrix = class DOMMatrix {
+      a = 1;
+      b = 0;
+      c = 0;
+      d = 1;
+      e = 0;
+      f = 0;
+      translateSelf() {
+        return this;
+      }
+      scaleSelf() {
+        return this;
+      }
+      multiplySelf() {
+        return this;
+      }
+    };
+  }
+
+  if (!globalScope.ImageData) globalScope.ImageData = class ImageData {};
+  if (!globalScope.Path2D) globalScope.Path2D = class Path2D {};
+}
+
 function parseVndAmount(amountText: string): number | '' {
   const digits = amountText.replace(/[^\d]/g, '');
   if (!digits) return '';
@@ -233,7 +260,7 @@ async function runMiddleware(req: IncomingMessage, res: ServerResponse) {
   });
 }
 
-async function extractPdfText(file: UploadedFile) {
+async function extractPdfTextWithPdf2Json(file: UploadedFile) {
   const { default: PDFParser } = await import('pdf2json');
 
   return await new Promise<string>((resolve, reject) => {
@@ -261,6 +288,32 @@ async function extractPdfText(file: UploadedFile) {
 
     parser.parseBuffer(file.buffer, 0);
   });
+}
+
+async function extractPdfTextWithPdfParse(file: UploadedFile) {
+  installPdfJsPolyfills();
+  const { PDFParse } = await import('pdf-parse');
+  const parser = new PDFParse({ data: file.buffer });
+  try {
+    const result = await parser.getText();
+    return result.text || '';
+  } finally {
+    await parser.destroy();
+  }
+}
+
+async function extractPdfText(file: UploadedFile) {
+  try {
+    return await extractPdfTextWithPdf2Json(file);
+  } catch (firstError) {
+    try {
+      return await extractPdfTextWithPdfParse(file);
+    } catch (secondError) {
+      const firstMessage = firstError instanceof Error ? firstError.message : String(firstError);
+      const secondMessage = secondError instanceof Error ? secondError.message : String(secondError);
+      throw new Error(`${firstMessage}; ${secondMessage}`);
+    }
+  }
 }
 
 export default async function handler(req: IncomingMessage & { file?: UploadedFile }, res: ApiResponse) {
