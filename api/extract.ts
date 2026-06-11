@@ -1,6 +1,5 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import multer from 'multer';
-import { PDFParse } from 'pdf-parse';
 
 export const config = {
   api: {
@@ -227,6 +226,7 @@ async function runMiddleware(req: IncomingMessage, res: ServerResponse) {
 }
 
 async function extractPdfText(file: UploadedFile) {
+  const { PDFParse } = await import('pdf-parse');
   const parser = new PDFParse({ data: file.buffer });
   try {
     const result = await parser.getText();
