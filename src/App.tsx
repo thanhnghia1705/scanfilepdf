@@ -1,15 +1,77 @@
-import React, { useState, useRef } from 'react';
-import { UploadCloud, CheckCircle2, AlertCircle, Download, RotateCcw } from 'lucide-react';
-import { ReceiptData } from './types';
+import { useMemo, useRef, useState } from 'react';
+import {
+  AlertCircle,
+  CheckCircle2,
+  Download,
+  FileSpreadsheet,
+  FileText,
+  Loader2,
+  RotateCcw,
+  ShieldCheck,
+  Trash2,
+  UploadCloud,
+} from 'lucide-react';
 import ResultsTable from './components/ResultsTable';
+import { ReceiptData } from './types';
 import { exportToExcel } from './utils/excelExport';
+
+const SUCCESS_STATUS = 'Đọc thành công';
+const MAX_FILES = 80;
+
+function formatVnd(value: number) {
+  return new Intl.NumberFormat('vi-VN', {
+    style: 'currency',
+    currency: 'VND',
+    maximumFractionDigits: 0,
+  }).format(value);
+}
+
+function createEmptyResult(file: File, note: string): ReceiptData {
+  return {
+    id: crypto.randomUUID(),
+    fileName: file.name,
+    receiptNumber: '',
+    receiptDate: '',
+    receiptDateConverted: '',
+    creatorName: '',
+    creatorUsername: '',
+    billingAddress: '',
+    totalAmountRaw: '',
+    totalAmount: '',
+    readMethod: '',
+    status: 'Lỗi',
+    note,
+  };
+}
 
 export default function App() {
   const [isDragging, setIsDragging] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [results, setResults] = useState<ReceiptData[]>([]);
-  const [progress, setProgress] = useState({ current: 0, total: 0 });
+  const [progress, setProgress] = useState({ current: 0, total: 0, fileName: '' });
+  const [uploadError, setUploadError] = useState('');
+  const [isExporting, setIsExporting] = useState(false);
+  const [exportMessage, setExportMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const metrics = useMemo(() => {
+    const successCount = results.filter((r) => r.status === SUCCESS_STATUS).length;
+    const reviewCount = results.length - successCount;
+    const totalAmount = results.reduce((sum, item) => {
+      const value =
+        typeof item.totalAmount === 'number'
+          ? item.totalAmount
+          : Number(String(item.totalAmount).replace(/[^\d.-]/g, ''));
+      return Number.isFinite(value) ? sum + value : sum;
+    }, 0);
+
+    return {
+      successCount,
+      reviewCount,
+      totalAmount,
+      successRate: results.length ? Math.round((successCount / results.length) * 100) : 0,
+    };
+  }, [results]);
 
   const processFile = async (file: File): Promise<ReceiptData> => {
     const formData = new FormData();
@@ -21,16 +83,11 @@ export default function App() {
         body: formData,
       });
 
+      const data = await response.json().catch(() => ({}));
       if (!response.ok) {
-        let errText = 'Lỗi từ server';
-        try {
-          const errJSON = await response.json();
-          if (errJSON.error) errText = errJSON.error;
-        } catch { }
-        throw new Error(errText);
+        throw new Error(data.error || 'Server chưa xử lý được file này.');
       }
 
-      const data = await response.json();
       return {
         id: crypto.randomUUID(),
         fileName: file.name,
@@ -42,219 +99,315 @@ export default function App() {
         billingAddress: data.billingAddress || '',
         totalAmountRaw: data.totalAmountRaw || '',
         totalAmount: data.totalAmount || '',
-        readMethod: data.readMethod || 'gemini',
-        status: data.status || '',
-        note: data.note || ''
+        readMethod: data.readMethod || 'Gemini OCR',
+        status: data.status || 'Thiếu thông tin',
+        note: data.note || '',
       };
-    } catch (err: any) {
-      return {
-        id: crypto.randomUUID(),
-        fileName: file.name,
-        receiptNumber: '',
-        receiptDate: '',
-        receiptDateConverted: '',
-        creatorName: '',
-        creatorUsername: '',
-        billingAddress: '',
-        totalAmountRaw: '',
-        totalAmount: '',
-        readMethod: '',
-        status: 'Lỗi',
-        note: err.message || 'Không thể đọc file'
-      };
+    } catch (error) {
+      return createEmptyResult(
+        file,
+        error instanceof Error ? error.message : 'Không thể đọc file. Vui lòng thử lại.',
+      );
     }
   };
 
   const handleFiles = async (files: FileList | File[]) => {
-    const fileArray = Array.from(files).filter(f => f.type === 'application/pdf' || f.type.startsWith('image/'));
-    if (fileArray.length === 0) return;
+    const fileArray = Array.from(files).filter(
+      (file) => file.type === 'application/pdf' || file.type.startsWith('image/'),
+    );
 
+    if (fileArray.length === 0) {
+      setUploadError('Vui lòng chọn file PDF, PNG, JPG hoặc WEBP.');
+      return;
+    }
+
+    const limitedFiles = fileArray.slice(0, MAX_FILES);
+    setUploadError(fileArray.length > MAX_FILES ? `Chỉ xử lý ${MAX_FILES} file đầu tiên mỗi lần tải.` : '');
+    setExportMessage(null);
     setIsProcessing(true);
-    setProgress({ current: 0, total: fileArray.length });
+    setProgress({ current: 0, total: limitedFiles.length, fileName: '' });
 
     const newResults: ReceiptData[] = [];
-
-    // Xử lý từng file một (Sequential) hoặc Promise.all.
-    // Dùng tuần tự để tránh rate limit nếu up nhiều file cùng lúc.
-    for (let i = 0; i < fileArray.length; i++) {
-      const result = await processFile(fileArray[i]);
+    for (let index = 0; index < limitedFiles.length; index += 1) {
+      const file = limitedFiles[index];
+      setProgress({ current: index, total: limitedFiles.length, fileName: file.name });
+      const result = await processFile(file);
       newResults.push(result);
-      setProgress({ current: i + 1, total: fileArray.length });
+      setProgress({ current: index + 1, total: limitedFiles.length, fileName: file.name });
     }
 
-    setResults(prev => [...newResults, ...prev]);
+    setResults((prev) => [...newResults, ...prev]);
     setIsProcessing(false);
-    
-    if (fileInputRef.current) {
-      fileInputRef.current.value = '';
-    }
-  };
-
-  const handleDragOver = (e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragging(true);
-  };
-
-  const handleDragLeave = (e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragging(false);
-  };
-
-  const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragging(false);
-    if (e.dataTransfer.files) {
-      handleFiles(e.dataTransfer.files);
-    }
+    if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
   const updateResult = (id: string, field: keyof ReceiptData, value: string) => {
-    setResults(prev => prev.map(item => item.id === id ? { ...item, [field]: value } : item));
+    setResults((prev) => prev.map((item) => (item.id === id ? { ...item, [field]: value } : item)));
   };
 
   const removeResult = (id: string) => {
-    setResults(prev => prev.filter(item => item.id !== id));
+    setResults((prev) => prev.filter((item) => item.id !== id));
+  };
+
+  const removeIncomplete = () => {
+    setResults((prev) => prev.filter((item) => item.status === SUCCESS_STATUS));
   };
 
   const handleReset = () => {
     setResults([]);
-    setProgress({ current: 0, total: 0 });
-    if (fileInputRef.current) {
-      fileInputRef.current.value = '';
+    setUploadError('');
+    setExportMessage(null);
+    setProgress({ current: 0, total: 0, fileName: '' });
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
+  const handleExport = async () => {
+    if (results.length === 0) return;
+    setIsExporting(true);
+    setExportMessage(null);
+
+    try {
+      const fileName = await exportToExcel(results);
+      setExportMessage({ type: 'success', text: `Đã tạo file ${fileName}. Vui lòng kiểm tra thư mục Downloads.` });
+    } catch (error) {
+      setExportMessage({
+        type: 'error',
+        text: error instanceof Error ? `Không xuất được Excel: ${error.message}` : 'Không xuất được Excel.',
+      });
+    } finally {
+      setIsExporting(false);
     }
   };
 
-  const successCount = results.filter(r => r.status === 'Đọc thành công').length;
-  const warningCount = results.length - successCount;
-
   return (
-    <div className="h-screen w-full bg-[#f5f5f0] text-[#1c1917] font-sans flex flex-col p-6 overflow-hidden">
-      {/* Header Section */}
-      <header className="flex justify-between items-end mb-6 shrink-0">
-        <div>
-          <h1 className="text-3xl font-serif italic text-[#5A5A40] leading-none">ReceiptToSheet</h1>
-          <p className="text-xs uppercase tracking-widest text-[#78716c] mt-2">TikTok Shop Creator Invoice Processor</p>
-        </div>
-        <div className="flex gap-4">
-          <div className="bg-white px-4 py-2 rounded-2xl border border-stone-200 shadow-sm flex flex-col">
-            <span className="text-[10px] text-stone-400 uppercase">Processed</span>
-            <span className="text-lg font-serif">{results.length}</span>
+    <div className="min-h-screen overflow-x-hidden bg-slate-50 text-slate-900">
+      <div className="mx-auto flex min-h-screen w-full max-w-[1600px] min-w-0 flex-col gap-4 px-4 py-4 sm:px-6 lg:px-8">
+        <header className="flex flex-col gap-4 border-b border-slate-200 pb-4 lg:flex-row lg:items-end lg:justify-between">
+          <div>
+            <div className="flex items-center gap-2 text-sm font-semibold text-teal-700">
+              <FileSpreadsheet className="h-4 w-4" />
+              ReceiptToSheet Pro
+            </div>
+            <h1 className="mt-2 text-xl font-semibold tracking-tight sm:text-3xl">
+              Quét hóa đơn và tổng hợp dữ liệu xuất Excel
+            </h1>
+            <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
+              Dành cho xử lý hàng loạt biên nhận TikTok Shop, creator invoice và chứng từ bán hàng.
+              Có thể rà soát thủ công trước khi xuất file tổng hợp.
+            </p>
           </div>
-          <div className="bg-white px-4 py-2 rounded-2xl border border-stone-200 shadow-sm flex flex-col">
-            <span className="text-[10px] text-stone-400 uppercase">Success Rate</span>
-            <span className="text-lg font-serif text-[#5A5A40]">
-              {results.length > 0 ? Math.round((successCount / results.length) * 100) : 0}%
-            </span>
-          </div>
-        </div>
-      </header>
 
-      <div className="flex-1 flex gap-6 min-h-0">
-        {/* Sidebar: Upload Zone */}
-        <aside className="w-72 flex flex-col gap-4 shrink-0">
-          <div 
-            onDragOver={handleDragOver}
-            onDragLeave={handleDragLeave}
-            onDrop={handleDrop}
-            className={`flex-1 bg-white border-2 border-dashed rounded-[32px] p-6 flex flex-col items-center justify-center text-center transition-all duration-200 relative
-              ${isDragging ? 'border-[#5A5A40] bg-[#f5f5f0]' : 'border-stone-300 hover:border-stone-400'}
-              ${isProcessing ? 'opacity-70 pointer-events-none' : ''}`}
-          >
-            <input 
-              type="file" 
-              ref={fileInputRef}
-              onChange={(e) => e.target.files && handleFiles(e.target.files)}
-              multiple 
-              accept=".pdf,image/*" 
-              className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-              disabled={isProcessing}
-            />
-            
-            {isProcessing ? (
-              <div className="flex flex-col items-center animate-pulse">
-                <div className="w-12 h-12 rounded-full bg-[#f5f5f0] flex items-center justify-center mb-4">
-                  <div className="w-6 h-6 border-2 border-[#5A5A40] border-t-transparent rounded-full animate-spin"></div>
+          <div className="grid w-full grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-4 xl:min-w-[560px] xl:max-w-[620px]">
+            <Metric label="Tổng file" value={String(results.length)} />
+            <Metric label="Đọc đúng" value={`${metrics.successRate}%`} tone="success" />
+            <Metric label="Cần rà soát" value={String(metrics.reviewCount)} tone="warning" />
+            <Metric label="Tổng tiền" value={formatVnd(metrics.totalAmount)} compact />
+          </div>
+        </header>
+
+        <main className="grid min-w-0 flex-1 grid-cols-1 gap-4 overflow-hidden lg:grid-cols-[320px_minmax(0,1fr)]">
+          <section className="flex min-h-[420px] min-w-0 flex-col gap-3 lg:min-h-0">
+            <div
+              onDragOver={(event) => {
+                event.preventDefault();
+                setIsDragging(true);
+              }}
+              onDragLeave={(event) => {
+                event.preventDefault();
+                setIsDragging(false);
+              }}
+              onDrop={(event) => {
+                event.preventDefault();
+                setIsDragging(false);
+                if (event.dataTransfer.files) void handleFiles(event.dataTransfer.files);
+              }}
+              className={`relative flex flex-1 flex-col justify-between rounded-lg border-2 border-dashed bg-white p-5 transition ${
+                isDragging ? 'border-teal-500 bg-teal-50' : 'border-slate-300'
+              } ${isProcessing ? 'pointer-events-none opacity-80' : 'hover:border-teal-400'}`}
+            >
+              <input
+                ref={fileInputRef}
+                type="file"
+                multiple
+                accept=".pdf,image/*"
+                disabled={isProcessing}
+                onChange={(event) => event.target.files && void handleFiles(event.target.files)}
+                className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+                aria-label="Chọn file hóa đơn"
+              />
+
+              <div>
+                <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-lg bg-teal-100 text-teal-700">
+                  {isProcessing ? <Loader2 className="h-6 w-6 animate-spin" /> : <UploadCloud className="h-6 w-6" />}
                 </div>
-                <h3 className="text-sm font-medium">Processing...</h3>
-                <p className="text-[11px] text-stone-400 mt-1">{progress.current} / {progress.total} files</p>
+                <h2 className="text-lg font-semibold">Tải file cần xử lý</h2>
+                <p className="mt-2 text-sm leading-6 text-slate-600">
+                  Kéo thả hoặc chọn nhiều file PDF, PNG, JPG, WEBP. App xử lý tuần tự để giảm lỗi giới hạn API.
+                </p>
               </div>
-            ) : (
-              <>
-                <div className="w-12 h-12 rounded-full bg-[#f5f5f0] flex items-center justify-center mb-4">
-                  <UploadCloud className="w-6 h-6 text-[#5A5A40]" />
+
+              <div className="mt-6 space-y-3">
+                {isProcessing ? (
+                  <div className="rounded-lg border border-teal-100 bg-teal-50 p-3">
+                    <div className="flex items-center justify-between text-sm font-medium text-teal-900">
+                      <span>Đang xử lý</span>
+                      <span>
+                        {progress.current}/{progress.total}
+                      </span>
+                    </div>
+                    <div className="mt-3 h-2 overflow-hidden rounded-full bg-white">
+                      <div
+                        className="h-full rounded-full bg-teal-600 transition-all"
+                        style={{ width: `${progress.total ? (progress.current / progress.total) * 100 : 0}%` }}
+                      />
+                    </div>
+                    <p className="mt-2 truncate text-xs text-teal-800" title={progress.fileName}>
+                      {progress.fileName || 'Đang chuẩn bị file...'}
+                    </p>
+                  </div>
+                ) : (
+                  <button className="flex w-full items-center justify-center gap-2 rounded-lg bg-teal-700 px-4 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-teal-800">
+                    <UploadCloud className="h-4 w-4" />
+                    Chọn file
+                  </button>
+                )}
+
+                {uploadError ? (
+                  <div className="flex gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">
+                    <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+                    <span>{uploadError}</span>
+                  </div>
+                ) : null}
+              </div>
+            </div>
+
+            <div className="rounded-lg border border-slate-200 bg-white p-4">
+              <div className="mb-3 flex items-center justify-between">
+                <h2 className="text-sm font-semibold">Hàng đợi gần nhất</h2>
+                <span className="text-xs text-slate-500">{results.length} file</span>
+              </div>
+              <div className="custom-scrollbar max-h-52 space-y-2 overflow-y-auto pr-1">
+                {results.length === 0 ? (
+                  <div className="rounded-lg bg-slate-50 p-4 text-sm text-slate-500">
+                    Chưa có file nào. Tải hóa đơn lên để bắt đầu.
+                  </div>
+                ) : (
+                  results.slice(0, 12).map((result) => (
+                    <div key={result.id} className="flex items-center gap-3 rounded-lg border border-slate-100 p-2">
+                      {result.status === SUCCESS_STATUS ? (
+                        <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600" />
+                      ) : (
+                        <AlertCircle className="h-4 w-4 shrink-0 text-amber-600" />
+                      )}
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-xs font-medium text-slate-700" title={result.fileName}>
+                          {result.fileName}
+                        </p>
+                        <p className="truncate text-[11px] text-slate-500">{result.note || result.status}</p>
+                      </div>
+                      <button
+                        type="button"
+                        className="rounded-md p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+                        onClick={() => removeResult(result.id)}
+                        title="Xóa dòng này"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          </section>
+
+          <section className="flex min-h-[520px] min-w-0 flex-col overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
+            <div className="flex flex-col gap-3 border-b border-slate-200 p-4 xl:flex-row xl:items-center xl:justify-between">
+              <div>
+                <div className="flex items-center gap-2 text-sm font-semibold">
+                  <ShieldCheck className="h-4 w-4 text-teal-700" />
+                  Bảng kiểm tra dữ liệu
                 </div>
-                <h3 className="text-sm font-medium">Upload Invoices</h3>
-                <p className="text-[11px] text-stone-400 mt-1">PDF or Images</p>
-                <button className="mt-4 bg-[#5A5A40] text-white text-xs px-6 py-2.5 rounded-full hover:bg-[#4a4a35] transition-colors pointer-events-none">
-                  Select Files
+                <p className="mt-1 text-xs text-slate-500">
+                  Chỉnh trực tiếp từng ô trước khi xuất Excel. Các dòng thiếu thông tin được đánh dấu màu vàng.
+                </p>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={removeIncomplete}
+                  disabled={metrics.reviewCount === 0 || isProcessing}
+                  className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <FileText className="h-4 w-4" />
+                  Giữ dòng hợp lệ
                 </button>
-              </>
-            )}
-          </div>
-
-          <div className="h-48 bg-white rounded-[32px] border border-stone-200 p-4 overflow-hidden flex flex-col">
-            <h4 className="text-[10px] uppercase tracking-wider text-stone-400 mb-2">Queue</h4>
-            <div className="flex-1 overflow-y-auto space-y-2 pr-1 custom-scrollbar">
-              {results.map((r) => (
-                <div key={r.id} className={`flex items-center gap-3 p-2 rounded-xl border ${r.status === 'Đọc thành công' ? 'bg-[#f5f5f0] border-transparent' : 'border-stone-100'}`}>
-                  <div className={`w-2 h-2 rounded-full shrink-0 ${r.status === 'Đọc thành công' ? 'bg-[#5A5A40]' : 'bg-amber-400'}`}></div>
-                  <span className="text-[11px] truncate flex-1 text-stone-600" title={r.fileName}>{r.fileName}</span>
-                </div>
-              ))}
-              {results.length === 0 && <p className="text-[11px] text-stone-400 italic text-center w-full mt-4">No files processed.</p>}
+                <button
+                  type="button"
+                  onClick={handleReset}
+                  disabled={results.length === 0 || isProcessing}
+                  className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <RotateCcw className="h-4 w-4" />
+                  Làm mới
+                </button>
+                <button
+                  type="button"
+                  onClick={handleExport}
+                  disabled={results.length === 0 || isProcessing || isExporting}
+                  className="inline-flex items-center gap-2 rounded-lg bg-slate-900 px-4 py-2 text-xs font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {isExporting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+                  {isExporting ? 'Đang xuất' : 'Xuất Excel'}
+                </button>
+              </div>
             </div>
-          </div>
-        </aside>
 
-        {/* Main Data Table */}
-        <main className="flex-1 bg-white rounded-[32px] shadow-sm border border-stone-200 flex flex-col overflow-hidden min-w-0">
-          <div className="p-6 border-b border-stone-100 flex justify-between items-center shrink-0">
-            <h2 className="text-xl font-serif">Extraction Preview</h2>
-            <div className="flex gap-2">
-              <span className="text-[10px] bg-green-50 text-green-700 px-3 py-1 rounded-full border border-green-100">{successCount} Success</span>
-              <span className="text-[10px] bg-amber-50 text-amber-700 px-3 py-1 rounded-full border border-amber-100">{warningCount} Incomplete</span>
-            </div>
-          </div>
-
-          <div className="flex-1 overflow-auto bg-white custom-scrollbar">
-            <ResultsTable 
-              data={results}
-              onUpdate={updateResult}
-              onRemove={removeResult}
-            />
-          </div>
-
-          <div className="p-6 bg-[#fbfbf9] border-t border-stone-100 flex justify-between items-center shrink-0">
-            <p className="text-[11px] text-stone-500 italic">Double-click or edit any cell to manually correct values before export.</p>
-            <div className="flex gap-3">
-              <button 
-                onClick={handleReset}
-                disabled={results.length === 0}
-                className="px-6 py-2.5 rounded-full bg-white border border-stone-200 text-stone-600 text-xs font-medium flex items-center gap-2 hover:bg-stone-50 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+            {exportMessage ? (
+              <div
+                className={`mx-4 mt-3 rounded-lg border px-3 py-2 text-xs ${
+                  exportMessage.type === 'success'
+                    ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
+                    : 'border-rose-200 bg-rose-50 text-rose-800'
+                }`}
               >
-                <RotateCcw className="w-4 h-4" />
-                Reset
-              </button>
-              <button 
-                onClick={() => exportToExcel(results)}
-                disabled={results.length === 0}
-                className="px-8 py-2.5 rounded-full bg-[#5A5A40] text-white text-xs font-medium flex items-center gap-2 hover:bg-[#4a4a35] shadow-lg shadow-[#5a5a40]/20 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                <Download className="w-4 h-4" />
-                Export Excel (.xlsx)
-              </button>
+                {exportMessage.text}
+              </div>
+            ) : null}
+
+            <div className="custom-scrollbar flex-1 overflow-auto">
+              <ResultsTable data={results} onUpdate={updateResult} onRemove={removeResult} />
             </div>
-          </div>
+          </section>
         </main>
       </div>
+    </div>
+  );
+}
 
-      <footer className="mt-6 flex justify-between items-center text-[10px] text-stone-400 uppercase tracking-[2px] shrink-0">
-        <div className="flex gap-6">
-          <span>ReceiptToSheet App</span>
-          <span>thanhnghiaecommerce</span>
-        </div>
-        <div>&copy; 2026 Crafted for TikTok Shop Creators</div>
-      </footer>
+function Metric({
+  label,
+  value,
+  tone = 'neutral',
+  compact = false,
+}: {
+  label: string;
+  value: string;
+  tone?: 'neutral' | 'success' | 'warning';
+  compact?: boolean;
+}) {
+  const toneClass =
+    tone === 'success'
+      ? 'text-emerald-700'
+      : tone === 'warning'
+        ? 'text-amber-700'
+        : 'text-slate-900';
+
+  return (
+    <div className="rounded-lg border border-slate-200 bg-white px-3 py-2">
+      <p className="text-[11px] font-medium uppercase tracking-wide text-slate-500">{label}</p>
+      <p className={`mt-1 truncate font-semibold ${compact ? 'text-sm' : 'text-xl'} ${toneClass}`} title={value}>
+        {value}
+      </p>
     </div>
   );
 }

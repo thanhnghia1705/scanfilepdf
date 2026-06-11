@@ -1,5 +1,5 @@
 export interface ReceiptData {
-  id: string; // for internal mapping
+  id: string;
   fileName: string;
   receiptNumber: string;
   receiptDate: string;

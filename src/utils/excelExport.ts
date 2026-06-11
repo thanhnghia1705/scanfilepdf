@@ -1,63 +1,104 @@
-import { utils, writeFile } from 'xlsx';
+import writeXlsxFile, { type Row } from 'write-excel-file/browser';
 import { ReceiptData } from '../types';
 
-export function exportToExcel(data: ReceiptData[]) {
+const headers = [
+  'STT',
+  'Tên file',
+  'Số hóa đơn',
+  'Ngày hóa đơn gốc',
+  'Ngày hóa đơn chuẩn',
+  'Tên creator/người nhận',
+  'Username',
+  'Địa chỉ thanh toán',
+  'Tổng tiền gốc',
+  'Tổng tiền chuẩn',
+  'Cách đọc',
+  'Trạng thái',
+  'Ghi chú',
+];
 
-  const exportData = data.map((item, index) => {
-    let numTotal: number | string = item.totalAmount || '';
-    if (typeof numTotal === 'string') {
-      const parsed = Number(numTotal);
-      if (!isNaN(parsed)) numTotal = parsed;
-    }
-    
-    return {
-      'STT': index + 1,
-      'File Name': item.fileName || '',
-      'Receipt Number': item.receiptNumber || '',
-      'Receipt Date': item.receiptDate || '',
-      'Receipt Date Converted': item.receiptDateConverted || '',
-      'Creator name': item.creatorName || '',
-      'Creator Username': item.creatorUsername || '',
-      'Billing Address': item.billingAddress || '',
-      'Total Amount Raw': item.totalAmountRaw || '',
-      'Total Amount': numTotal,
-      'Read Method': item.readMethod || '',
-      'Status': item.status || '',
-      'Note': item.note || ''
-    };
-  });
+function toNumber(value: number | string): number | undefined {
+  if (typeof value === 'number') return value;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
 
-  const worksheet = utils.json_to_sheet(exportData);
-  
-  // Format the Total Amount column (J) as number #,##0
-  const range = utils.decode_range(worksheet['!ref'] || 'A1:A1');
-  for (let R = range.s.r + 1; R <= range.e.r; ++R) {
-    const cell_address = utils.encode_cell({c: 9, r: R}); // J is index 9
-    if(worksheet[cell_address]) {
-      worksheet[cell_address].z = '#,##0';
-    }
-  }
+function buildFileName() {
+  const today = new Date();
+  const yyyy = today.getFullYear();
+  const mm = String(today.getMonth() + 1).padStart(2, '0');
+  const dd = String(today.getDate()).padStart(2, '0');
+  return `tong_hop_hoa_don_${yyyy}${mm}${dd}.xlsx`;
+}
 
-  const workbook = utils.book_new();
+function createHeaderRow(): Row {
+  return headers.map((header) => ({
+    value: header,
+    fontWeight: 'bold',
+    backgroundColor: '#E2E8F0',
+    color: '#0F172A',
+    align: 'center',
+  }));
+}
 
-  // Đặt chiều rộng cột tự động / hợp lý hơn
-  worksheet['!cols'] = [
-    { wch: 5 },  // STT
-    { wch: 20 }, // File Name
-    { wch: 25 }, // Receipt Number
-    { wch: 15 }, // Receipt Date
-    { wch: 20 }, // Receipt Date Converted
-    { wch: 20 }, // Creator Name
-    { wch: 15 }, // Creator Username
-    { wch: 35 }, // Billing Address
-    { wch: 15 }, // Total Amount Raw
-    { wch: 15 }, // Total Amount
-    { wch: 15 }, // Read Method
-    { wch: 15 }, // Status
-    { wch: 25 }  // Note
+function createDataRow(item: ReceiptData, index: number): Row {
+  const totalAmount = toNumber(item.totalAmount);
+
+  return [
+    index + 1,
+    item.fileName || '',
+    item.receiptNumber || '',
+    item.receiptDate || '',
+    item.receiptDateConverted || '',
+    item.creatorName || '',
+    item.creatorUsername || '',
+    item.billingAddress || '',
+    item.totalAmountRaw || '',
+    totalAmount === undefined
+      ? ''
+      : {
+          value: totalAmount,
+          type: Number,
+          format: '#,##0',
+        },
+    item.readMethod || '',
+    item.status || '',
+    item.note || '',
   ];
+}
 
-  utils.book_append_sheet(workbook, worksheet, 'Tong_hop_receipt');
-  
-  writeFile(workbook, 'tong_hop_hoa_don.xlsx');
+export async function exportToExcel(data: ReceiptData[]) {
+  const rows: Row[] = [createHeaderRow(), ...data.map(createDataRow)];
+
+  const blob = await writeXlsxFile(rows, {
+    sheet: 'Tong_hop_hoa_don',
+    columns: [
+      { width: 6 },
+      { width: 28 },
+      { width: 24 },
+      { width: 18 },
+      { width: 18 },
+      { width: 26 },
+      { width: 18 },
+      { width: 42 },
+      { width: 18 },
+      { width: 18 },
+      { width: 18 },
+      { width: 18 },
+      { width: 36 },
+    ],
+    stickyRowsCount: 1,
+  }).toBlob();
+
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = buildFileName();
+  link.rel = 'noopener';
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  return link.download;
 }
