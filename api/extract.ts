@@ -82,6 +82,14 @@ function cleanText(value: unknown): string {
   return typeof value === 'string' ? value.replace(/\s+/g, ' ').trim() : '';
 }
 
+function safeDecodePdfText(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
 function parseVndAmount(amountText: string): number | '' {
   const digits = amountText.replace(/[^\d]/g, '');
   if (!digits) return '';
@@ -240,7 +248,7 @@ async function extractPdfText(file: UploadedFile) {
       try {
         const text = data.Pages.flatMap((page) =>
           page.Texts.sort((a, b) => a.y - b.y || a.x - b.x).map((item) =>
-            item.R.map((run) => decodeURIComponent(run.T)).join(''),
+            item.R.map((run) => safeDecodePdfText(run.T)).join(''),
           ),
         ).join('\n');
         parser.destroy();
