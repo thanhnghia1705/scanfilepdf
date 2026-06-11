@@ -1,0 +1,6 @@
+{
+  "name": "Smart Receipt Reader",
+  "description": "Upload multiple TikTok Shop Creator receipts (PDF/Images) and automatically extract data to an Excel file.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
