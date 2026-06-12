@@ -16,7 +16,6 @@ import { ReceiptData } from './types';
 import { exportToExcel } from './utils/excelExport';
 
 const SUCCESS_STATUS = 'Đọc thành công';
-const MAX_FILES = 80;
 
 function formatVnd(value: number) {
   return new Intl.NumberFormat('vi-VN', {
@@ -121,19 +120,19 @@ export default function App() {
       return;
     }
 
-    const limitedFiles = fileArray.slice(0, MAX_FILES);
-    setUploadError(fileArray.length > MAX_FILES ? `Chỉ xử lý ${MAX_FILES} file đầu tiên mỗi lần tải.` : '');
+    const filesToProcess = fileArray;
+    setUploadError('');
     setExportMessage(null);
     setIsProcessing(true);
-    setProgress({ current: 0, total: limitedFiles.length, fileName: '' });
+    setProgress({ current: 0, total: filesToProcess.length, fileName: '' });
 
     const newResults: ReceiptData[] = [];
-    for (let index = 0; index < limitedFiles.length; index += 1) {
-      const file = limitedFiles[index];
-      setProgress({ current: index, total: limitedFiles.length, fileName: file.name });
+    for (let index = 0; index < filesToProcess.length; index += 1) {
+      const file = filesToProcess[index];
+      setProgress({ current: index, total: filesToProcess.length, fileName: file.name });
       const result = await processFile(file);
       newResults.push(result);
-      setProgress({ current: index + 1, total: limitedFiles.length, fileName: file.name });
+      setProgress({ current: index + 1, total: filesToProcess.length, fileName: file.name });
     }
 
     setResults((prev) => [...newResults, ...prev]);
